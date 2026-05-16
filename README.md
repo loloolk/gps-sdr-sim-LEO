@@ -15,7 +15,11 @@ to RF using software-defined radio (SDR) platforms, such as
 ### Building with GCC
 
 ```
-$ gcc gpssim.c -lm -O3 -o gps-sdr-sim
+$ gcc gpssim.c -lm -O3 -std=gnu2x -o gps-sdr-sim
+```
+Or just use make:
+```
+$ make
 ```
 
 ### Using bigger user motion files
@@ -31,29 +35,64 @@ $ make USER_MOTION_SIZE=4000
 This variable can also be set when compiling directly with GCC:
 
 ```
-$ gcc gpssim.c -lm -O3 -o gps-sdr-sim -DUSER_MOTION_SIZE=4000
+$ gcc gpssim.c -lm -O3 -std=gnu2x -o gps-sdr-sim -DUSER_MOTION_SIZE=4000
 ```
 
 ### Generating the GPS signal file
 
-A user-defined trajectory can be specified in either a CSV file, which contains 
-the Earth-centered Earth-fixed (ECEF) user positions, or an NMEA GGA stream.
+
+```
+Usage: gps-sdr-sim [options]
+Options:
+  -e <gps_nav>     RINEX navigation file for GPS ephemerides (required)
+  -u <user_motion> User motion file in ECEF x, y, z format (dynamic mode)
+  -x <user_motion> User motion file in lat, lon, height format (dynamic mode)
+  -g <nmea_gga>    NMEA GGA stream (dynamic mode)
+  -c <location>    ECEF X,Y,Z in meters (static mode) e.g. 3967283.154,1022538.181,4872414.484
+  -l <location>    Lat, lon, height (static mode) e.g. 35.681298,139.766247,10.0
+  -L <wnslf,dn,dtslf> User leap future event in GPS week number, day number, next leap second e.g. 2347,3,19
+  -t <date,time>   Scenario start time YYYY/MM/DD,hh:mm:ss
+  -T <date,time>   Overwrite TOC and TOE to scenario start time
+  -d <duration>    Duration [sec] (dynamic mode max: 300, static mode max: 86400)
+  -o <output>      I/Q sampling data file (default: gpssim.bin)
+  -s <frequency>   Sampling frequency [Hz] (default: 2600000)
+  -f <frequency>   Supported carrier frequency [L1/L2/L5] (default: L1)
+  -b <iq_bits>     I/Q data format [1/8/16] (default: 16)
+  -i               Disable ionospheric delay for spacecraft scenario
+  -p [fixed_gain]  Disable path loss and hold power level constant
+  -v               Show details about simulated channels
+```
+
+## Defining position and motion of the user
+
+### Static mode
+
+In static mode the receiver's position is fixed and the GPS signal is generated for a static user. The user can specify the location of the receiver in either ECEF or lat/lon/height format.
+To run the program in this mode use the `-c` or `-l` option to specify the user location.
+
+### Dynamic mode
+A user-defined trajectory can be specified in either a CSV file, which contains the Earth-centered Earth-fixed (ECEF) user positions, a CSV file containing latitude, longitude, and height values, or an NMEA GGA stream.
+
+If using the CSV files, the program supposts additional columns for a quaternion to specify the antenna attitude, which is used to calculate the antenna gain pattern for each satellite in view. The attitude information is optional and if not provided, the antenna is assumed to be pointing towards the zenith.
+
 The sampling rate of the user motion has to be 10Hz.
-The user is also able to assign a static location directly through the command line.
 
-The user specifies the GPS satellite constellation through a GPS broadcast 
-ephemeris file. The daily GPS broadcast ephemeris file (brdc) is a merge of the
-individual site navigation files into one. The archive for the daily file can 
-be downloaded from: https://cddis.nasa.gov/archive/gnss/data/daily/. Access 
-to this site requires registration, which is free.
+## Ephemeris data
 
-These files are then used to generate the simulated pseudorange and
-Doppler for the GPS satellites in view. This simulated range data is 
-then used to generate the digitized I/Q samples for the GPS signal.
+The user specifies the GPS satellite constellation through a GPS broadcast ephemeris file. The daily GPS broadcast ephemeris file (brdc) is a merge of the individual site navigation files into one. The archive for the daily file can  be downloaded from: https://cddis.nasa.gov/archive/gnss/data/daily/. Access to this site does requires registration, but is free.
 
-The bladeRF and ADALM-Pluto command line interface requires I/Q pairs stored as signed 
-16-bit integers, while the hackrf_transfer and gps-sdr-sim-uhd.py
-support signed bytes.
+These files are then used to generate the simulated pseudorange and Doppler for the GPS satellites in view. This simulated range data is  then used to generate the digitized I/Q samples for the GPS signal.
+
+## Using the data
+Originally, the generated I/Q samples were intended to be used with software-defined radio (SDR) platforms, such as ADALM-Pluto, bladeRF, HackRF, and USRP. The simulated GPS signal file can be loaded into the SDR for playback and transmitted to a GPS receiver under test.
+
+However, for testing purposes the generated I/Q samples can also be used with software-based GPS signal processing tools, such as [GNSS-SDR](https://gnss-sdr.org/).
+
+Currently all of the `.conf` files in the `output` folder are generated for use with GNSS-SDR, but they can be modified for use with other software-based GPS signal processing tools.
+
+## SDR platform requirements
+
+The bladeRF and ADALM-Pluto command line interface requires I/Q pairs stored as signed 16-bit integers, while the hackrf_transfer and gps-sdr-sim-uhd.py support signed bytes.
 
 HackRF, bladeRF and ADALM-Pluto can accept the default sample rate of 2.6MHz, 
 while the USRP2 requires an even integral decimator of 100 MHz, i.e. 2.5MHz.
@@ -70,46 +109,7 @@ four 1-bit I/Q samples into a single byte.
 You can use [bladeplayer](https://github.com/osqzss/gps-sdr-sim/tree/master/player)
 for bladeRF to playback the compressed file.
 
-```
-Usage: gps-sdr-sim [options]
-Options:
-  -e <gps_nav>     RINEX navigation file for GPS ephemerides (required)
-  -u <user_motion> User motion file in ECEF x, y, z format (dynamic mode)
-  -x <user_motion> User motion file in lat, lon, height format (dynamic mode)
-  -g <nmea_gga>    NMEA GGA stream (dynamic mode)
-  -c <location>    ECEF X,Y,Z in meters (static mode) e.g. 3967283.15,1022538.18,4872414.48
-  -l <location>    Lat,Lon,Hgt (static mode) e.g. 30.286502,120.032669,100
-  -L <wnslf,dn,dtslf> User leap future event in GPS week number, day number, next leap second e.g. 2347,3,19
-  -t <date,time>   Scenario start time YYYY/MM/DD,hh:mm:ss
-  -T <date,time>   Overwrite TOC and TOE to scenario start time
-  -d <duration>    Duration [sec] (dynamic mode max: 300 static mode max: 86400)
-  -o <output>      I/Q sampling data file (default: gpssim.bin ; use - for stdout)
-  -s <frequency>   Sampling frequency [Hz] (default: 2600000)
-  -b <iq_bits>     I/Q data format [1/8/16] (default: 16)
-  -i               Disable ionospheric delay for spacecraft scenario
-  -p [fixed_gain]  Disable path loss and hold power level constant
-  -v               Show details about simulated channels
-```
-
-The user motion can be specified in either dynamic or static mode:
-
-```
-> gps-sdr-sim -e brdc3540.14n -u circle.csv
-```
-
-```
-> gps-sdr-sim -e brdc3540.14n -x circle_llh.csv
-```
-
-```
-> gps-sdr-sim -e brdc3540.14n -g triumphv3.txt
-```
-
-```
-> gps-sdr-sim -e brdc3540.14n -l 30.286502,120.032669,100
-```
-
-### Transmitting the samples
+## Transmitting the samples
 
 The TX port of a particular SDR platform is connected to the GPS receiver 
 under test through a DC block and a fixed 50-60dB attenuator.
@@ -187,5 +187,6 @@ Default 3.0MHz. Applicable range 1.0MHz to 5.0MHz.
 
 ### License
 
+Copyright &copy; 2026 Marc Oger  
 Copyright &copy; 2015-2025 Takuji Ebinuma  
 Distributed under the [MIT License](http://www.opensource.org/licenses/mit-license.php).
