@@ -80,6 +80,7 @@ enum CARRY_FREQUENCIES_INDEX {
 	CARR_NUM_FREQS = 3 // Useful trick to keep track of the array size
 };
 /*! \brief Carrier frequencies for GPS L1, L2, and L5 bands indexed based on CARRY_FREQUENCIES_INDEX */
+// If changing this, make sure to update PATH_LOSS_DB_OFFSETS as well
 static constexpr double CARR_FREQS[CARR_NUM_FREQS] = {
 	/*! \brief GPS L1 Carrier frequency */
 	[CARR_L1_INDEX] = 1575.42e6,

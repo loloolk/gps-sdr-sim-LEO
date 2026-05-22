@@ -11,6 +11,7 @@
 #include <unistd.h>
 #endif
 #include "gpssim.h"
+#include "sv_constants.h"
 
 /* ------------- Static Global Variables ------------- */
 
@@ -1831,6 +1832,50 @@ int checkSatVisibility(const ephem_t *eph, gpstime_t g, const double xyz[3], dou
 	return (0); // Invisible
 }
 
+/*! 
+ * \brief Calculates the L1 C/A EIRP for a specific GPS satellite
+ * \param svn The Space Vehicle Number (1 to 82)
+ * \param off_boresight_deg The calculated angle between nadir and the LEO receiver (in degrees)
+ * \return The L1 C/A EIRP in dBW, or -999.0 if the SVN is invalid or if the block type is unknown
+ */
+double lerp_eirp(int svn, double off_boresight_deg)
+{
+	if (svn < 1 || svn >= TOTAL_SV_COUNT) return -999.0;
+
+	enum BLOCK_TYPE block_type = SVN_TO_BLOCK_TYPE[svn];
+	if (block_type == INVALID) return -999.0;
+
+	// Maybe return -999?
+	if (off_boresight_deg >= TRANSMITTER_DIRECTIVITY_ACCURACY_L1 - 1) {
+        off_boresight_deg = TRANSMITTER_DIRECTIVITY_ACCURACY_L1 - 1.001; 
+    }
+
+	int lower_idx = (int)floor(off_boresight_deg);
+	int upper_idx = (int)ceil(off_boresight_deg);
+
+	double lower_eirp = TRANSMITTER_DIRECTIVITY_PATTERN_L1[block_type][lower_idx];
+	double upper_eirp = TRANSMITTER_DIRECTIVITY_PATTERN_L1[block_type][upper_idx];
+
+	double weight = off_boresight_deg - lower_idx;
+
+	double directivity = lower_eirp + weight * (upper_eirp - lower_eirp);
+
+	double gain;
+	if (GAIN_CORRECTION_FACTOR_L1[svn] != 0.0) {
+		gain = directivity + GAIN_CORRECTION_FACTOR_L1[svn];
+	}
+	else {
+		// If no specific gain correction factor is provided for this SVN, use assume -1
+		gain = directivity - 1.0; // Default correction factor
+	}
+
+	double total_eirp = gain + AMPLIFIER_TRANSMIT_POWER_L1[block_type];
+
+	double ca_eirp = total_eirp - NON_CA_POWER_COMPONENT_L1;
+
+	return ca_eirp;
+}
+
 /*!
  * \brief Allocate channels for visible satellites
  * \param config Pointer to the simulation configuration structure
@@ -2486,6 +2531,7 @@ int main(int argc, char *argv[])
 	// Log initial position
 	double llh[3];
 	ecef2llh(state.xyz[0], llh);
+	fprintf(stderr, "Initial position:\n");
 	fprintf(stderr, "xyz = %11.1f, %11.1f, %11.1f\n", state.xyz[0][0], state.xyz[0][1], state.xyz[0][2]);
 	fprintf(stderr, "llh = %11.6f, %11.6f, %11.1f\n", llh[0] * R2D, llh[1] * R2D, llh[2]);
 
@@ -2553,104 +2599,145 @@ int main(int argc, char *argv[])
 	{
 		double delt = 1.0 / config.sample_frequency;
 
+		// Simulate this time step for each allocated channel
 		for (int i = 0; i < MAX_CHAN; i++)
 		{
+			if (state.channels[i].prn <= 0) // Skip unallocated channels
+				continue;
+
 			int boresight_idx = -1;
+			int sat_idx = state.channels[i].prn - 1;
 
-			if (state.channels[i].prn > 0)
-			{
-				int sat_idx = state.channels[i].prn - 1;
+			// Refresh code phase and data bit counters
 
-				// Refresh code phase and data bit counters
+			range_t rho;
+			// index = 0 if static location mode, otherwise index = time_step for dynamic user motion
+			int index = time_step * (!staticLocationMode);
+			computeRange(&rho, state.eph[state.current_eph_index][sat_idx], &config.ionosphere_model, state.current_gps_time, state.xyz[index]);
 
-				range_t rho;
-				// index = 0 if static location mode, otherwise index = time_step for dynamic user motion
-				int index = time_step * (!staticLocationMode);
-				computeRange(&rho, state.eph[state.current_eph_index][sat_idx], &config.ionosphere_model, state.current_gps_time, state.xyz[index]);
+			range_t rho_next;
+			gpstime_t next_gps_time = incGpsTime(state.current_gps_time, 0.1);
+			int next_index = time_step + 1 < config.max_duration * 10 ? (time_step + 1) * (!staticLocationMode) : index;
+			computeRange(&rho_next, state.eph[state.current_eph_index][sat_idx], &config.ionosphere_model, next_gps_time, state.xyz[next_index]);
 
-				range_t rho_next;
-				gpstime_t next_gps_time = incGpsTime(state.current_gps_time, 0.1);
-				int next_index = time_step + 1 < config.max_duration * 10 ? (time_step + 1) * (!staticLocationMode) : index;
-				computeRange(&rho_next, state.eph[state.current_eph_index][sat_idx], &config.ionosphere_model, next_gps_time, state.xyz[next_index]);
+			double v_rx[3];
+			v_rx[0] = (state.xyz[next_index][0] - state.xyz[index][0]) / 0.1;
+			v_rx[1] = (state.xyz[next_index][1] - state.xyz[index][1]) / 0.1;
+			v_rx[2] = (state.xyz[next_index][2] - state.xyz[index][2]) / 0.1;
 
-				double v_rx[3];
-				v_rx[0] = (state.xyz[next_index][0] - state.xyz[index][0]) / 0.1;
-				v_rx[1] = (state.xyz[next_index][1] - state.xyz[index][1]) / 0.1;
-				v_rx[2] = (state.xyz[next_index][2] - state.xyz[index][2]) / 0.1;
+			// Project the receiver velocity onto the LOS vector (receiver -> satellite)
+			double v_rx_los_0 = v_rx[0] * rho.los_ecef[0] + v_rx[1] * rho.los_ecef[1] + v_rx[2] * rho.los_ecef[2];
+			double v_rx_los_1 = v_rx[0] * rho_next.los_ecef[0] + v_rx[1] * rho_next.los_ecef[1] + v_rx[2] * rho_next.los_ecef[2];
 
-				// Project the receiver velocity onto the LOS vector (receiver -> satellite)
-				double v_rx_los_0 = v_rx[0] * rho.los_ecef[0] + v_rx[1] * rho.los_ecef[1] + v_rx[2] * rho.los_ecef[2];
-				double v_rx_los_1 = v_rx[0] * rho_next.los_ecef[0] + v_rx[1] * rho_next.los_ecef[1] + v_rx[2] * rho_next.los_ecef[2];
+			double true_rate_0 = rho.rate - v_rx_los_0;
+			double true_rate_1 = rho_next.rate - v_rx_los_1;
 
-				double true_rate_0 = rho.rate - v_rx_los_0;
-				double true_rate_1 = rho_next.rate - v_rx_los_1;
+			double f_carr_0 = -(true_rate_0 / LAMBDA[config.carr_freq_index]); 
+			double f_carr_1 = -(true_rate_1 / LAMBDA[config.carr_freq_index]);
 
-				double f_carr_0 = -(true_rate_0 / LAMBDA[config.carr_freq_index]); 
-				double f_carr_1 = -(true_rate_1 / LAMBDA[config.carr_freq_index]);
+			double f_rate = (f_carr_1 - f_carr_0) / 0.1;
 
-				double f_rate = (f_carr_1 - f_carr_0) / 0.1;
+			state.channels[i].azel[0] = rho.azel[0];
+			state.channels[i].azel[1] = rho.azel[1];
 
-				state.channels[i].azel[0] = rho.azel[0];
-				state.channels[i].azel[1] = rho.azel[1];
+			state.channels[i].carr_phase_step = f_carr_0 * delt + 0.5 * f_rate * delt * delt;
+			state.channels[i].carr_phase_accel = f_rate * delt * delt;
 
-				state.channels[i].carr_phase_step = f_carr_0 * delt + 0.5 * f_rate * delt * delt;
-				state.channels[i].carr_phase_accel = f_rate * delt * delt;
-
-				// Update code phase and data bit counters
-				computeCodePhase(&config, &state.channels[i], rho, 0.1);
+			// Update code phase and data bit counters
+			computeCodePhase(&config, &state.channels[i], rho, 0.1);
 
 #ifndef FLOAT_CARR_PHASE
-				// Scale the float steps into the 32-bit fixed-point accumulator format
-				state.channels[i].carr_phasestep_int = (int)round(512.0 * 65536.0 * state.channels[i].carr_phase_step);
-				state.channels[i].carr_phase_accel_int = (int)round(512.0 * 65536.0 * state.channels[i].carr_phase_accel);
+			// Scale the float steps into the 32-bit fixed-point accumulator format
+			state.channels[i].carr_phasestep_int = (int)round(512.0 * 65536.0 * state.channels[i].carr_phase_step);
+			state.channels[i].carr_phase_accel_int = (int)round(512.0 * 65536.0 * state.channels[i].carr_phase_accel);
 #endif
 
-				// Friis Path Loss calculation
-				// Acts as a simple signal strength model that accounts for the change in free-space path loss with satellite range and carrier frequency
-				double freq_delta_db = PATH_LOSS_DB_OFFSETS[config.carr_freq_index] - PATH_LOSS_DB_OFFSETS[CARR_L5_INDEX];
-				double path_loss = (20200000.0 / rho.d) * pow(10.0, -freq_delta_db / 20.0);
-
-				// Receiver antenna gain
-				if (config.has_attitude && !staticLocationMode)
-				{
-					/*
-					* Rotate the unit LOS vector (receiver -> satellite, ECEF) into the
-					* receiver body frame using the attitude quaternion for this epoch.
-					*
-					* Convention: antenna boresight = +Z body axis.
-					* For a nadir-pointing spacecraft swap to -Z: use -los_body[2].
-					*
-					* Boresight angle θ = acos( dot(los_body, [0,0,1]) ) = acos(los_body[2])
-					*/
-					double los_body[3];
-					quatRotVect(los_body, state.quat[time_step], rho.los_ecef);
-
-					double cos_bs = los_body[2]; // dot with +Z boresight
-					cos_bs = (cos_bs >  1.0) ?  1.0 :
-							(cos_bs < -1.0) ? -1.0 : cos_bs; // numerical clamp
-					double boresight_deg = acos(cos_bs) * R2D;
-
-					boresight_idx = (int)(boresight_deg / 5.0);
-					if (boresight_idx > 36) boresight_idx = 36; // pattern table bound
-				}
-				else
-				{
-					// Terrestrial / static fallback: zenith-up, symmetric pattern
-					boresight_idx = (int)((90.0 - rho.azel[1] * R2D) / 5.0);
-					if (boresight_idx < 0)  boresight_idx = 0;
-					if (boresight_idx > 36) boresight_idx = 36;
-				}
-				
-				double antenna_gain = ant_pat[boresight_idx];
-
-				// Signal gain
-				if (config.path_loss_enable == TRUE)
-					gain[i] = (path_loss * antenna_gain * 128.0); // scaled by 2^7
-				else
-					gain[i] = config.fixed_gain; // hold the power level constant
+			// If path loss is disabled, use fixed gain for all channels and skip the rest of the calculations
+			if (!config.path_loss_enable)
+			{
+				gain[i] = config.fixed_gain;
+				continue;
 			}
+
+			// Calculate the LOS from satellite to receiver to find the off-boresight angle for the antenna gain pattern
+			double sat_pos[3];
+			sat_pos[0] = state.xyz[index][0] + (rho.los_ecef[0] * rho.d);
+			sat_pos[1] = state.xyz[index][1] + (rho.los_ecef[1] * rho.d);
+			sat_pos[2] = state.xyz[index][2] + (rho.los_ecef[2] * rho.d);
+
+			// cos(a) where a is the angle between LOS and satellite position vector
+			double cos_alpha = dotProd(rho.los_ecef, sat_pos) / normVect(sat_pos);
+
+			// Clamp
+			cos_alpha = (cos_alpha > 1.0) ? 1.0 : ((cos_alpha < -1.0) ? -1.0 : cos_alpha);
+
+			double off_boresight_deg = acos(cos_alpha) * R2D;
+			
+			// Get the PRN and corresponding SVN for this channel to look up the EIRP pattern for this satellite
+			int prn = state.channels[i].prn;
+			int svn = PRN_TO_SVN[prn];
+			if (svn <= 0 || svn >= TOTAL_SV_COUNT || SVN_TO_BLOCK_TYPE[svn] == INVALID) {
+				fprintf(stderr, "WARNING: Invalid SVN %d for PRN %d. Setting gain to 0.\n", svn, prn);
+				gain[i] = 0.0;
+				continue;
+			}
+
+			double ca_eirp = lerp_eirp(svn, off_boresight_deg);
+			if (ca_eirp < -160.0)
+			{
+				gain[i] = 0.0;
+				continue;
+			}
+
+			// Friis Path Loss calculation
+			double FSPL = 20 * log10(rho.d) + PATH_LOSS_DB_OFFSETS[config.carr_freq_index];
+
+			// Receiver antenna gain
+			if (config.has_attitude && !staticLocationMode)
+			{
+				/*
+				* Rotate the unit LOS vector (receiver -> satellite, ECEF) into the
+				* receiver body frame using the attitude quaternion for this epoch.
+				*
+				* Convention: antenna boresight = +Z body axis.
+				* For a nadir-pointing spacecraft swap to -Z: use -los_body[2].
+				*
+				* Boresight angle θ = acos( dot(los_body, [0,0,1]) ) = acos(los_body[2])
+				*/
+				double los_body[3];
+				quatRotVect(los_body, state.quat[time_step], rho.los_ecef);
+
+				double cos_bs = los_body[2]; // dot with +Z boresight
+				cos_bs = (cos_bs >  1.0) ?  1.0 :
+						(cos_bs < -1.0) ? -1.0 : cos_bs; // numerical clamp
+				double boresight_deg = acos(cos_bs) * R2D;
+
+				boresight_idx = (int)(boresight_deg / 5.0);
+				if (boresight_idx > 36) boresight_idx = 36; // pattern table bound
+			}
+			else
+			{
+				// Terrestrial / static fallback: zenith-up, symmetric pattern
+				boresight_idx = (int)((90.0 - rho.azel[1] * R2D) / 5.0);
+				if (boresight_idx < 0)  boresight_idx = 0;
+				if (boresight_idx > 36) boresight_idx = 36;
+			}
+			
+			double prx_dbw_at_antenna = ca_eirp - FSPL; // Received power at the antenna input in dBW
+
+			// Convert dBW to linear scale and apply scaling factor for I/Q generation
+			double baseline_dbw = -158.5;
+			double relative_power_db = prx_dbw_at_antenna - baseline_dbw;
+
+			double physical_multiplier = pow(10.0, relative_power_db / 20.0);
+			
+			double antenna_gain = ant_pat[boresight_idx];
+
+			// Signal gain
+			gain[i] = physical_multiplier * antenna_gain * 128.0;
 		}
 
+		// Reconstruct the I/Q stream for this 0.1 second step
 		for (int sample_idx = 0; sample_idx < state.iq_buff_size; sample_idx++)
 		{
 			float i_acc = 0;
@@ -2658,67 +2745,67 @@ int main(int argc, char *argv[])
 
 			for (int i = 0; i < MAX_CHAN; i++)
 			{
-				if (state.channels[i].prn > 0)
+				if (state.channels[i].prn <= 0) // Skip unallocated channels
+					continue;
+
+#ifdef FLOAT_CARR_PHASE
+				int table_idx = (int)floor(state.channels[i].carr_phase * 512.0);
+#else
+				int table_idx = (state.channels[i].carr_phase >> 16) & 0x1ff; // 9-bit index
+#endif
+				float ip = state.channels[i].dataBit * state.channels[i].codeCA * cosTable512[table_idx] * gain[i];
+				float qp = state.channels[i].dataBit * state.channels[i].codeCA * sinTable512[table_idx] * gain[i];
+
+				// Accumulate for all visible satellites
+				i_acc += ip;
+				q_acc += qp;
+
+				// Update code phase
+				state.channels[i].code_phase += state.channels[i].f_code * delt;
+
+				if (state.channels[i].code_phase >= CA_SEQ_LEN)
 				{
-#ifdef FLOAT_CARR_PHASE
-					int table_idx = (int)floor(state.channels[i].carr_phase * 512.0);
-#else
-					int table_idx = (state.channels[i].carr_phase >> 16) & 0x1ff; // 9-bit index
-#endif
-					float ip = state.channels[i].dataBit * state.channels[i].codeCA * cosTable512[table_idx] * gain[i];
-					float qp = state.channels[i].dataBit * state.channels[i].codeCA * sinTable512[table_idx] * gain[i];
+					state.channels[i].code_phase -= CA_SEQ_LEN;
 
-					// Accumulate for all visible satellites
-					i_acc += ip;
-					q_acc += qp;
+					state.channels[i].icode++;
 
-					// Update code phase
-					state.channels[i].code_phase += state.channels[i].f_code * delt;
-
-					if (state.channels[i].code_phase >= CA_SEQ_LEN)
+					if (state.channels[i].icode >= 20) // 20 C/A codes = 1 navigation data bit
 					{
-						state.channels[i].code_phase -= CA_SEQ_LEN;
+						state.channels[i].icode = 0;
+						state.channels[i].ibit++;
 
-						state.channels[i].icode++;
-
-						if (state.channels[i].icode >= 20) // 20 C/A codes = 1 navigation data bit
+						if (state.channels[i].ibit >= 30) // 30 navigation data bits = 1 word
 						{
-							state.channels[i].icode = 0;
-							state.channels[i].ibit++;
-
-							if (state.channels[i].ibit >= 30) // 30 navigation data bits = 1 word
-							{
-								state.channels[i].ibit = 0;
-								state.channels[i].iword++;
-								/*
-								if (state.channels[i].iword>=N_DWRD)
-									fprintf(stderr, "\nWARNING: Subframe word buffer overflow.\n");
-								*/
-							}
-
-							// Set new navigation data bit
-							state.channels[i].dataBit = (int)((state.channels[i].dwrd[state.channels[i].iword] >> (29 - state.channels[i].ibit)) & 0x1UL) * 2 - 1;
+							state.channels[i].ibit = 0;
+							state.channels[i].iword++;
+							/*
+							if (state.channels[i].iword>=N_DWRD)
+								fprintf(stderr, "\nWARNING: Subframe word buffer overflow.\n");
+							*/
 						}
+
+						// Set new navigation data bit
+						state.channels[i].dataBit = (int)((state.channels[i].dwrd[state.channels[i].iword] >> (29 - state.channels[i].ibit)) & 0x1UL) * 2 - 1;
 					}
-
-					// Set current code chip
-					state.channels[i].codeCA = state.channels[i].ca[(int)state.channels[i].code_phase] * 2 - 1;
-
-					// Update carrier phase
-#ifdef FLOAT_CARR_PHASE
-					state.channels[i].carr_phase += state.channels[i].carr_phase_step;
-					
-					state.channels[i].carr_phase_step += state.channels[i].carr_phase_accel;
-
-					if (state.channels[i].carr_phase >= 1.0)
-						state.channels[i].carr_phase -= 1.0;
-					else if (state.channels[i].carr_phase < 0.0)
-						state.channels[i].carr_phase += 1.0;
-#else
-					state.channels[i].carr_phase += state.channels[i].carr_phasestep_int;
-					state.channels[i].carr_phasestep_int += state.channels[i].carr_phase_accel_int;
-#endif
 				}
+
+				// Set current code chip
+				state.channels[i].codeCA = state.channels[i].ca[(int)state.channels[i].code_phase] * 2 - 1;
+
+				// Update carrier phase
+#ifdef FLOAT_CARR_PHASE
+				state.channels[i].carr_phase += state.channels[i].carr_phase_step;
+				
+				state.channels[i].carr_phase_step += state.channels[i].carr_phase_accel;
+
+				if (state.channels[i].carr_phase >= 1.0)
+					state.channels[i].carr_phase -= 1.0;
+				else if (state.channels[i].carr_phase < 0.0)
+					state.channels[i].carr_phase += 1.0;
+#else
+				state.channels[i].carr_phase += state.channels[i].carr_phasestep_int;
+				state.channels[i].carr_phasestep_int += state.channels[i].carr_phase_accel_int;
+#endif
 			}
 
 			// Scaled by 2^7
