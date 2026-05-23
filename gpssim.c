@@ -1846,9 +1846,7 @@ double lerp_eirp(int svn, double off_boresight_deg)
 	if (block_type == INVALID) return -999.0;
 
 	// Maybe return -999?
-	if (off_boresight_deg >= TRANSMITTER_DIRECTIVITY_ACCURACY_L1 - 1) {
-        off_boresight_deg = TRANSMITTER_DIRECTIVITY_ACCURACY_L1 - 1.001; 
-    }
+	if (off_boresight_deg >= TRANSMITTER_DIRECTIVITY_ACCURACY_L1) return -999.0;
 
 	int lower_idx = (int)floor(off_boresight_deg);
 	int upper_idx = (int)ceil(off_boresight_deg);
@@ -1924,11 +1922,7 @@ int allocateChannel(sim_config_t *config, sim_state_t *state, int pos_index, dou
 						computeRange(&rho, *eph, &config->ionosphere_model, state->current_gps_time, state->xyz[pos_index]);
 						state->channels[i].rho0 = rho;
 
-						// Initialize carrier phase
-						double r_xyz = rho.range;
-
 						computeRange(&rho, *eph, &config->ionosphere_model, state->current_gps_time, state->xyz[pos_index]);
-						double r_ref = rho.range;
 
 						double phase_ini = 0.0; // TODO: Must initialize properly
 						//double phase_ini = (2.0 * r_ref - r_xyz) / LAMBDA[carrFreqIndex];
@@ -2726,7 +2720,7 @@ int main(int argc, char *argv[])
 			double prx_dbw_at_antenna = ca_eirp - FSPL; // Received power at the antenna input in dBW
 
 			// Convert dBW to linear scale and apply scaling factor for I/Q generation
-			double baseline_dbw = -158.5;
+			double baseline_dbw = MINIMUM_RECEIVED_DBW;
 			double relative_power_db = prx_dbw_at_antenna - baseline_dbw;
 
 			double physical_multiplier = pow(10.0, relative_power_db / 20.0);

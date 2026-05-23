@@ -7,7 +7,10 @@
 // Number of Active SVs in the GPS constellation as of May 20 2026
 #define ACTIVE_SV_COUNT (32)
 
-//
+// Minumum signal received acording to IS-GPS-200
+#define MINIMUM_RECEIVED_DBW -158.5
+
+// Assumed component of power not used for C/A signal (in dbw)
 #define NON_CA_POWER_COMPONENT_L1 1.76
 
 enum BLOCK_TYPE {
