@@ -2689,18 +2689,36 @@ int main(int argc, char *argv[])
 			if (config.has_attitude && !staticLocationMode)
 			{
 				/*
-				* Rotate the unit LOS vector (receiver -> satellite, ECEF) into the
-				* receiver body frame using the attitude quaternion for this epoch.
+				* Two-step rotation: ECEF -> NEU -> body frame.
 				*
-				* Convention: antenna boresight = +Z body axis.
-				* For a nadir-pointing spacecraft swap to -Z: use -los_body[2].
+				* Input quaternion convention: NEU -> body frame.
+				* Identity quaternion {1,0,0,0} means no rotation relative to NEU,
+				* so antenna boresight (+Z body) = local Up (zenith), which is
+				* consistent with the terrestrial fallback below.
 				*
-				* Boresight angle θ = acos( dot(los_body, [0,0,1]) ) = acos(los_body[2])
+				* For a nadir-pointing LEO spacecraft, supply a quaternion that
+				* rotates NEU +Z (Up) onto nadir (-Up), e.g. a 180-degree rotation
+				* around the North or East axis.
 				*/
-				double los_body[3];
-				quatRotVect(los_body, state.quat[time_step], rho.los_ecef);
 
-				double cos_bs = los_body[2]; // dot with +Z boresight
+				// Rotate LOS unit vector from ECEF into local NEU frame
+				double los_neu[3];
+				double tmat[3][3];
+				double llh[3];
+				ecef2llh(state.xyz[index], llh);
+				ltcmat(llh, tmat);
+				ecef2neu(rho.los_ecef, tmat, los_neu);
+
+				// Apply body attitude (NEU -> body) using input quaternion
+				double los_body[3];
+				quatRotVect(los_body, state.quat[time_step], los_neu);
+
+				/*
+				* Boresight angle is the angle between the rotated LOS and +Z body axis.
+				* dot(los_body, [0,0,1]) = los_body[2], since los_body is a unit vector
+				* and the boresight is +Z.
+				*/
+				double cos_bs = los_body[2];
 				cos_bs = (cos_bs >  1.0) ?  1.0 :
 						(cos_bs < -1.0) ? -1.0 : cos_bs; // numerical clamp
 				double boresight_deg = acos(cos_bs) * R2D;
