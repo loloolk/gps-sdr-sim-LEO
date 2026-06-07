@@ -2552,7 +2552,6 @@ int main(int argc, char *argv[])
 	state.current_gps_time = incGpsTime(config.start_time, 0.0);
 	
 	// Elevation mask for satellite visibility check during channel allocation
-	// Currently assuming constant height
 	double h = llh[2] > 0.0 ? llh[2] : 0.0; // Ensure non-negative height for mask calculation
 	double elv_mask = -acos(WGS84_RADIUS / (WGS84_RADIUS + h)) * R2D; // in degrees
 	allocateChannel(&config, &state, 0, elv_mask);
@@ -2879,6 +2878,11 @@ int main(int argc, char *argv[])
 
 			// Acts exactly like the code above
 			int index = time_step * (!staticLocationMode);
+
+			double llh[3];
+			ecef2llh(state.xyz[index], llh);
+			double h = llh[2] > 0.0 ? llh[2] : 0.0; // Ensure non-negative height for mask calculation
+			double elv_mask = -acos(WGS84_RADIUS / (WGS84_RADIUS + h)) * R2D; // in degrees
 			allocateChannel(&config, &state, index, elv_mask);
 
 			// Show details about simulated channels
