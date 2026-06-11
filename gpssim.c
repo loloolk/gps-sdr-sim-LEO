@@ -2777,7 +2777,7 @@ int main(int argc, char *argv[])
 
 				// Apply body attitude (NEU -> body) using input quaternion
 				double los_body[3];
-				quatRotVect(los_body, state.quat[time_step], los_neu);
+				quatRotVect(los_body, state.quat[index], los_neu);
 
 				/*
 				* Boresight angle is the angle between the rotated LOS and +Z body axis.
@@ -2820,10 +2820,11 @@ int main(int argc, char *argv[])
 			}
 			else
 			{
-				antenna_gain = ant_pat_db[boresight_idx];
+				antenna_gain = -ant_pat_db[boresight_idx];
 			}
-		
-			double prx_dbw_at_antenna = ca_eirp - FSPL - antenna_gain; // Received power at the antenna input in dBW
+			// Prx = EIRP - FSPL + Grx
+			// antenna_gain is in dBi: positive = gain, negative = loss
+			double prx_dbw_at_antenna = ca_eirp - FSPL + antenna_gain; // Received power at the antenna input in dBW
 
 			// Convert dBW to linear scale and apply scaling factor for I/Q generation
 			double baseline_dbw = MINIMUM_RECEIVED_DBW;
@@ -2984,7 +2985,7 @@ int main(int argc, char *argv[])
 			double llh[3];
 			ecef2llh(state.xyz[index], llh);
 			double h = llh[2] > 0.0 ? llh[2] : 0.0; // Ensure non-negative height for mask calculation
-			double elv_mask = -acos(WGS84_RADIUS / (WGS84_RADIUS + h)) * R2D; // in degrees
+			elv_mask = -acos(WGS84_RADIUS / (WGS84_RADIUS + h)) * R2D; // in degrees
 			allocateChannel(&config, &state, index, elv_mask);
 
 			// Show details about simulated channels
