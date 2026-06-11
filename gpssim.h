@@ -271,6 +271,11 @@ typedef struct
     double carr_phase_accel; 
 } channel_t;
 
+typedef struct
+{
+    double gain[361][181];
+} custom_antenna_model_t;
+
 /*! \brief Structure representing the runtime configuration of the simulation */
 typedef struct
 {
@@ -297,6 +302,14 @@ typedef struct
 	 * @default "gpssim.bin"
 	 */
 	char outfile[MAX_CHAR];
+
+	/*
+	 * File name of the custom antenna model CSV file
+	 */
+	char antenna_model_file[MAX_CHAR];
+
+	/* Pointer to the loaded custom antenna model */
+	custom_antenna_model_t *antenna_model;
 
 	/* 
 	 * Integer value to keep track of which frequency band to simulate.
@@ -424,6 +437,8 @@ static const sim_config_t DEFAULT_SIM_CONFIG = { // should be constexpr but C/C+
 	.navfile = "",
 	.umfile = "",
 	.outfile = "gpssim.bin",
+	.antenna_model_file = "",
+	.antenna_model = NULL,
 
 	.sample_frequency = 2.6e6,
 	.max_duration = USER_MOTION_SIZE / 10.0, // Default duration based on user motion array size and 10Hz sampling rate

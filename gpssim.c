@@ -1695,9 +1695,17 @@ int readNmeaGGA(sim_config_t *config, FILE *fp, double xyz[USER_MOTION_SIZE][3],
  */
 int readUserMotion(sim_config_t *config, sim_state_t *state)
 {
-	FILE *fp;
-	if ((fp = fopen(config->umfile, "rt")) == NULL)
+	if (config->umfile[0] == '\0') {
+		fprintf(stderr, "Error: User motion file path is not specified.\n");
 		return (-1);
+	}
+	
+	FILE *fp;
+	if ((fp = fopen(config->umfile, "r")) == NULL)
+	{
+		fprintf(stderr, "ERROR: Cannot open user motion file %s.\n", config->umfile);
+		return (-1);
+	}
 
 	int user_motion_count = 0;
 	if (config->um_nmeaGGA == TRUE)
@@ -1841,15 +1849,15 @@ int checkSatVisibility(const ephem_t *eph, gpstime_t g, const double xyz[3], dou
 double lerp_eirp(int svn, double off_boresight_deg)
 {
 	if (svn < 1 || svn >= TOTAL_SV_COUNT) return -999.0;
+	if (off_boresight_deg >= TRANSMITTER_DIRECTIVITY_ACCURACY_L1) return -999.0;
 
 	enum BLOCK_TYPE block_type = SVN_TO_BLOCK_TYPE[svn];
 	if (block_type == INVALID) return -999.0;
 
-	// Maybe return -999?
-	if (off_boresight_deg >= TRANSMITTER_DIRECTIVITY_ACCURACY_L1) return -999.0;
-
 	int lower_idx = (int)floor(off_boresight_deg);
 	int upper_idx = (int)ceil(off_boresight_deg);
+
+	if (lower_idx < 0 || upper_idx >= TRANSMITTER_DIRECTIVITY_ACCURACY_L1) return -999.0;
 
 	double lower_eirp = TRANSMITTER_DIRECTIVITY_PATTERN_L1[block_type][lower_idx];
 	double upper_eirp = TRANSMITTER_DIRECTIVITY_PATTERN_L1[block_type][upper_idx];
@@ -1865,9 +1873,20 @@ double lerp_eirp(int svn, double off_boresight_deg)
 	else {
 		// If no specific gain correction factor is provided for this SVN, use assume -1
 		gain = directivity - 1.0; // Default correction factor
+		fprintf(stderr, "WARNING: No gain correction factor for SVN %d, using default correction of -1 dB.\n", svn);
+		fprintf(stderr, "Please ensure that the sv_constants.h file is up to date with gain correction factors for all SVNs.\n");
 	}
 
-	double total_eirp = gain + AMPLIFIER_TRANSMIT_POWER_L1[block_type];
+	double total_eirp;
+	if (AMPLIFIER_TRANSMIT_POWER_L1[block_type] != 0.0) {
+		total_eirp = gain + AMPLIFIER_TRANSMIT_POWER_L1[block_type];
+	}
+	else {
+		// If no specific amplifier transmit power is provided for this block type, use assume 14.4
+		total_eirp = gain + 14.4; // Default amplifier transmit power
+		fprintf(stderr, "WARNING: No amplifier transmit power for block type %d, using default value of 14.4 dBW.\n", block_type);
+		fprintf(stderr, "Please ensure that the sv_constants.h file is up to date with amplifier transmit powers for all block types.\n");
+	}
 
 	double ca_eirp = total_eirp - NON_CA_POWER_COMPONENT_L1;
 
@@ -1979,6 +1998,7 @@ void usage(void)
 		"  -b <iq_bits>     I/Q data format [1/8/16] (default: 16)\n"
 		"  -i               Disable ionospheric delay for spacecraft scenario\n"
 		"  -p [fixed_gain]  Disable path loss and hold power level constant\n"
+		"  -A <csv_file>    Custom antenna model CSV file (phi, theta, gain)\n"
 		"  -v               Show details about simulated channels\n",
 		((double)USER_MOTION_SIZE) / 10.0, STATIC_MAX_DURATION);
 
@@ -1996,7 +2016,7 @@ void parseArguments(int argc, char *argv[], sim_config_t *config, sim_state_t *s
 {
 	int result;
 
-	while ((result = getopt(argc, argv, "e:u:x:g:c:l:o:s:b:L:T:t:d:f:ipv")) != -1)
+	while ((result = getopt(argc, argv, "e:u:x:g:c:l:o:s:b:L:T:t:d:f:ipvA:")) != -1)
 	{
 		switch (result)
 		{
@@ -2205,6 +2225,11 @@ void parseArguments(int argc, char *argv[], sim_config_t *config, sim_state_t *s
 				config->verbose = TRUE;
 				break;
 			}
+		case 'A': // Custom antenna model
+			{
+				strcpy(config->antenna_model_file, optarg);
+				break;
+			}
 		case ':':
 		case '?':
 			{
@@ -2220,6 +2245,45 @@ void parseArguments(int argc, char *argv[], sim_config_t *config, sim_state_t *s
 }
 
 /*!
+ * \brief Load custom antenna model from CSV file
+ * \param config Pointer to the simulation configuration structure
+ */
+void load_antenna_model(sim_config_t *config)
+{
+	FILE *fp = fopen(config->antenna_model_file, "r");
+	if (!fp) {
+		fprintf(stderr, "ERROR: Failed to open antenna model file %s\n", config->antenna_model_file);
+		exit(1);
+	}
+	config->antenna_model = (custom_antenna_model_t *)malloc(sizeof(custom_antenna_model_t));
+	if (!config->antenna_model) {
+		fprintf(stderr, "ERROR: Memory allocation failed for antenna model\n");
+		exit(1);
+	}
+	
+	// Initialize with a default low gain
+	for (int p = 0; p < 361; p++) {
+		for(int t = 0; t < 181; t++) {
+			config->antenna_model->gain[p][t] = -1000.0; 
+		}
+	}
+	
+	char line[1024];
+	while (fgets(line, sizeof(line), fp)) {
+		double phi, theta, db;
+		if (sscanf(line, "%lf,%lf,%lf", &phi, &theta, &db) == 3) {
+			int p_idx = (int)round(phi) + 180;
+			int t_idx = (int)round(theta);
+			if (p_idx >= 0 && p_idx <= 360 && t_idx >= 0 && t_idx <= 180) {
+				config->antenna_model->gain[p_idx][t_idx] = db;
+			}
+		}
+	}
+	fclose(fp);
+	fprintf(stderr, "Custom antenna model loaded from %s\n", config->antenna_model_file);
+}
+
+/*!
  * \brief Verify the command-line arguments to ensure they are valid and consistent
  * \param config Pointer to the simulation configuration structure.
  * \param state Pointer to the simulation state structure.
@@ -2231,6 +2295,11 @@ void verifyArguments(sim_config_t *config, sim_state_t *state)
 	{
 		fprintf(stderr, "ERROR: GPS ephemeris file (RINEX navigation file) is not specified.\n");
 		exit(1);
+	}
+
+	if (config->antenna_model_file[0] != '\0')
+	{
+		load_antenna_model(config);
 	}
 
 	// Ensure only one input method for user motion is specified
@@ -2308,9 +2377,14 @@ void initializeSimulation(sim_config_t *config, sim_state_t *state)
 	}
 	else
 	{
-		user_motion_count = (int)(config->max_duration * 10.0 + 0.5);
-
 		fprintf(stderr, "Using static location mode.\n");
+		if (state->xyz[0][0] == 0.0 && state->xyz[0][1] == 0.0 && state->xyz[0][2] == 0.0)
+		{
+			fprintf(stderr, "ERROR: Static mode location not specified.\n");
+			exit(1);
+		}
+		
+		user_motion_count = (int)(config->max_duration * 10.0 + 0.5);
 	}
 	
 	// Compare the number of user motion records read with maximum duration specified
@@ -2566,15 +2640,6 @@ int main(int argc, char *argv[])
 	}
 
 	////////////////////////////////////////////////////////////
-	// Receiver antenna gain pattern
-	////////////////////////////////////////////////////////////
-
-	// Load the antenna gain pattern in dB for boresight angles 0, 5, ..., 180 degrees
-	double ant_pat[37];
-	for (int i = 0; i < 37; i++)
-		ant_pat[i] = pow(10.0, -ant_pat_db[i] / 20.0);
-
-	////////////////////////////////////////////////////////////
 	// Run the simulation loop
 	////////////////////////////////////////////////////////////
 
@@ -2686,11 +2751,12 @@ int main(int argc, char *argv[])
 			double FSPL = 20 * log10(rho.d) + PATH_LOSS_DB_OFFSETS[config.carr_freq_index];
 
 			// Receiver antenna gain
+			double phi_deg = 0.0;
+			double theta_deg = 0.0;
+
 			if (config.has_attitude && !staticLocationMode)
 			{
 				/*
-				* Two-step rotation: ECEF -> NEU -> body frame.
-				*
 				* Input quaternion convention: NEU -> body frame.
 				* Identity quaternion {1,0,0,0} means no rotation relative to NEU,
 				* so antenna boresight (+Z body) = local Up (zenith), which is
@@ -2725,6 +2791,9 @@ int main(int argc, char *argv[])
 
 				boresight_idx = (int)(boresight_deg / 5.0);
 				if (boresight_idx > 36) boresight_idx = 36; // pattern table bound
+				
+				theta_deg = boresight_deg;
+				phi_deg = atan2(los_body[1], los_body[0]) * R2D;
 			}
 			else
 			{
@@ -2732,20 +2801,35 @@ int main(int argc, char *argv[])
 				boresight_idx = (int)((90.0 - rho.azel[1] * R2D) / 5.0);
 				if (boresight_idx < 0)  boresight_idx = 0;
 				if (boresight_idx > 36) boresight_idx = 36;
+				
+				theta_deg = 90.0 - rho.azel[1] * R2D;
+				phi_deg = rho.azel[0] * R2D;
 			}
 			
-			double prx_dbw_at_antenna = ca_eirp - FSPL; // Received power at the antenna input in dBW
+			double antenna_gain;
+			if (config.antenna_model != NULL)
+			{
+				int p_idx = (int)round(phi_deg) + 180;
+				int t_idx = (int)round(theta_deg);
+				if (p_idx < 0) p_idx = 0;
+				if (p_idx > 360) p_idx = 360;
+				if (t_idx < 0) t_idx = 0;
+				if (t_idx > 180) t_idx = 180;
+				
+				antenna_gain = config.antenna_model->gain[p_idx][t_idx];
+			}
+			else
+			{
+				antenna_gain = ant_pat_db[boresight_idx];
+			}
+		
+			double prx_dbw_at_antenna = ca_eirp - FSPL - antenna_gain; // Received power at the antenna input in dBW
 
 			// Convert dBW to linear scale and apply scaling factor for I/Q generation
 			double baseline_dbw = MINIMUM_RECEIVED_DBW;
-			double relative_power_db = prx_dbw_at_antenna - baseline_dbw;
-
-			double physical_multiplier = pow(10.0, relative_power_db / 20.0);
+			double relative_power_db = prx_dbw_at_antenna - baseline_dbw; // Relative power in dB compared to the baseline
 			
-			double antenna_gain = ant_pat[boresight_idx];
-
-			// Signal gain
-			gain[i] = physical_multiplier * antenna_gain * 128.0;
+			gain[i] = (float)(pow(10.0, relative_power_db / 20.0) * 128.0); // Scale to 7-bit range for I/Q generation
 		}
 
 		// Reconstruct the I/Q stream for this 0.1 second step
