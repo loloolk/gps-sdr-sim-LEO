@@ -1,47 +1,44 @@
 # GPS-SDR-SIM
 
-GPS-SDR-SIM generates GPS baseband signal data streams, which can be converted 
-to RF using software-defined radio (SDR) platforms, such as 
-[ADALM-Pluto](https://wiki.analog.com/university/tools/pluto), [bladeRF](http://nuand.com/), [HackRF](https://github.com/mossmann/hackrf/wiki), and [USRP](http://www.ettus.com/).
+GPS-SDR-SIM generates GPS baseband signal data streams, which can be converted to RF using software-defined radio (SDR) platforms. This version is enhanced for Low Earth Orbit (LEO) simulation and supports custom antenna models.
 
-### Windows build instructions
+Supported platforms include [ADALM-Pluto](https://wiki.analog.com/university/tools/pluto), [bladeRF](http://nuand.com/), [HackRF](https://github.com/mossmann/hackrf/wiki), and [USRP](http://www.ettus.com/).
 
+---
+
+## 🛠 Building the Project
+
+### Windows Build Instructions
 1. Start Visual Studio.
 2. Create an empty project for a console application.
-3. On the Solution Explorer at right, add "gpssim.c" and "getopt.c" to the Souce Files folder.
-4. Select "Release" in Solution Configurations drop-down list.
+3. On the Solution Explorer, add `gpssim.c` and `getopt.c` to the **Source Files** folder.
+4. Select **Release** in the Solution Configurations dropdown.
 5. Build the solution.
 
 ### Building with GCC
-
-```
+```bash
 $ gcc gpssim.c -lm -O3 -std=gnu2x -o gps-sdr-sim
 ```
-Or just use make:
-```
+Alternatively, use the provided `Makefile`:
+```bash
 $ make
 ```
 
-### Using bigger user motion files
-
-In order to use user motion files with more than 30000 samples (at 10Hz), the `USER_MOTION_SIZE`
-variable can be set to the maximum time of the user motion file in seconds. It is advisable to do
-this using make so gps-sdr-bin can update the size when needed. e.g:
-
-```
+### Customizing Buffer Size
+For user motion files with more than 30,000 samples (at 10Hz), set the `USER_MOTION_SIZE` variable to the maximum duration in seconds.
+```bash
 $ make USER_MOTION_SIZE=4000
 ```
-
-This variable can also be set when compiling directly with GCC:
-
-```
+Or via GCC:
+```bash
 $ gcc gpssim.c -lm -O3 -std=gnu2x -o gps-sdr-sim -DUSER_MOTION_SIZE=4000
 ```
 
-### Generating the GPS signal file
+---
 
+## 🚀 Usage & Options
 
-```
+```text
 Usage: gps-sdr-sim [options]
 Options:
   -e <gps_nav>     RINEX navigation file for GPS ephemerides (required)
@@ -50,142 +47,67 @@ Options:
   -g <nmea_gga>    NMEA GGA stream (dynamic mode)
   -c <location>    ECEF X,Y,Z in meters (static mode) e.g. 3967283.154,1022538.181,4872414.484
   -l <location>    Lat, lon, height (static mode) e.g. 35.681298,139.766247,10.0
-  -L <wnslf,dn,dtslf> User leap future event in GPS week number, day number, next leap second e.g. 2347,3,19
+  -L <wnslf,dn,dtslf> User leap future event in GPS week number, day number, next leap second
   -t <date,time>   Scenario start time YYYY/MM/DD,hh:mm:ss
   -T <date,time>   Overwrite TOC and TOE to scenario start time
-  -d <duration>    Duration [sec] (dynamic mode max: 300, static mode max: 86400)
+  -d <duration>    Duration [sec] (dynamic max: 300, static max: 86400)
   -o <output>      I/Q sampling data file (default: gpssim.bin)
   -s <frequency>   Sampling frequency [Hz] (default: 2600000)
   -f <frequency>   Supported carrier frequency [L1/L2/L5] (default: L1)
   -b <iq_bits>     I/Q data format [1/8/16] (default: 16)
-  -i               Disable ionospheric delay for spacecraft scenario
+  -i               Disable ionospheric delay (useful for spacecraft scenarios)
   -p [fixed_gain]  Disable path loss and hold power level constant
+  -A <csv_file>    Custom antenna model CSV file (phi, theta, gain)
   -v               Show details about simulated channels
 ```
 
-## Defining position and motion of the user
+---
 
-### Static mode
+## 📡 Simulation Modes
 
-In static mode the receiver's position is fixed and the GPS signal is generated for a static user. The user can specify the location of the receiver in either ECEF or lat/lon/height format.
-To run the program in this mode use the `-c` or `-l` option to specify the user location.
+### Static Mode
+The receiver position is fixed. Specify location using `-c` (ECEF) or `-l` (Lat/Lon/Height).
 
-### Dynamic mode
-A user-defined trajectory can be specified in either a CSV file, which contains the Earth-centered Earth-fixed (ECEF) user positions, a CSV file containing latitude, longitude, and height values, or an NMEA GGA stream.
+### Dynamic Mode
+Specify a trajectory via a CSV (ECEF or LLH) or NMEA GGA stream. The sampling rate must be **10Hz**.
+CSV files can include optional quaternion columns (`qw, qx, qy, qz`) to specify antenna attitude. If omitted, the antenna points towards the zenith.
 
-If using the CSV files, the program supposts additional columns for a quaternion to specify the antenna attitude, which is used to calculate the antenna gain pattern for each satellite in view. The attitude information is optional and if not provided, the antenna is assumed to be pointing towards the zenith.
-
-The sampling rate of the user motion has to be 10Hz.
-
-## Ephemeris data
-
-The user specifies the GPS satellite constellation through a GPS broadcast ephemeris file. The daily GPS broadcast ephemeris file (brdc) is a merge of the individual site navigation files into one. The archive for the daily file can  be downloaded from: https://cddis.nasa.gov/archive/gnss/data/daily/. Access to this site does requires registration, but is free.
-
-These files are then used to generate the simulated pseudorange and Doppler for the GPS satellites in view. This simulated range data is  then used to generate the digitized I/Q samples for the GPS signal.
-
-## Using the data
-Originally, the generated I/Q samples were intended to be used with software-defined radio (SDR) platforms, such as ADALM-Pluto, bladeRF, HackRF, and USRP. The simulated GPS signal file can be loaded into the SDR for playback and transmitted to a GPS receiver under test.
-
-However, for testing purposes the generated I/Q samples can also be used with software-based GPS signal processing tools, such as [GNSS-SDR](https://gnss-sdr.org/).
-
-Currently all of the `.conf` files in the `output` folder are generated for use with GNSS-SDR, but they can be modified for use with other software-based GPS signal processing tools.
-
-## SDR platform requirements
-
-The bladeRF and ADALM-Pluto command line interface requires I/Q pairs stored as signed 16-bit integers, while the hackrf_transfer and gps-sdr-sim-uhd.py support signed bytes.
-
-HackRF, bladeRF and ADALM-Pluto can accept the default sample rate of 2.6MHz, 
-while the USRP2 requires an even integral decimator of 100 MHz, i.e. 2.5MHz.
-
-The simulation start time can be specified if the corresponding set of ephemerides
-is available. Otherwise the first time of ephemeris in the RINEX navigation file
-is selected.
-
-The maximum simulation duration time is defined by USER_MOTION_SIZE to 
-prevent the output file from getting too large.
-
-The output file size can be reduced by using "-b 1" option to store 
-four 1-bit I/Q samples into a single byte. 
-You can use [bladeplayer](https://github.com/osqzss/gps-sdr-sim/tree/master/player)
-for bladeRF to playback the compressed file.
-
-## Transmitting the samples
-
-The TX port of a particular SDR platform is connected to the GPS receiver 
-under test through a DC block and a fixed 50-60dB attenuator.
-
-#### BladeRF:
-
-The simulated GPS signal file, named "gpssim.bin", can be loaded
-into the bladeRF for playback as shown below:
-
+### Custom Antenna Models
+You can provide a custom antenna gain model using the `-A` flag. The model must be a CSV with three columns: `phi` (-180 to 180), `theta` (0 to 180), and `gain` (dB).
+Example:
+```bash
+./gps-sdr-sim -e brdc0010.22n -u motion.csv -A antenna_models/my_antenna.csv
 ```
-set frequency 1575.42M
-set samplerate 2.6M
-set bandwidth 2.5M
-set txvga1 -25
-cal lms
-cal dc tx
-tx config file=gpssim.bin format=bin
-tx start
+Gain values are mapped to the nearest integer degree. If no model is provided, the simulation falls back to the default internal pattern.
+
+---
+
+## 📁 Repository Structure
+
+- `gpssim.c` / `gpssim.h`: Core simulation logic.
+- `antenna_models/`: Directory for custom antenna gain patterns.
+- `sdr_tools/`: Contains scripts and tools for various SDR platforms (BladeRF, HackRF, USRP, etc.).
+- `images/`: Project screenshots and documentation images.
+- `input_files/`: Sample trajectory and ephemeris files.
+- `outputs/`: Sample GNSS-SDR configuration files.
+
+---
+
+## 📻 SDR Integration
+
+Playback requirements vary by device:
+- **BladeRF / ADALM-Pluto**: Requires 16-bit signed integers (`-b 16`).
+- **HackRF / USRP**: Supports signed bytes (`-b 8`).
+- **Sample Rate**: Most devices accept 2.6MHz; USRP2 requires 2.5MHz (`-s 2500000`).
+
+Scripts for playback can be found in the `sdr_tools` directory. For example, to use BladeRF:
+```bash
+> bladeRF-cli -s sdr_tools/bladerf.script
 ```
 
-You can also execute these commands via the `bladeRF-cli` script option as below:
-```
-> bladeRF-cli -s bladerf.script
-```
+---
 
-#### HackRF:
-
-The output data have to be 8-bit signed I/Q samples.
-```
-> gps-sdr-sim -e brdc0010.22n -b 8
-```
-You can use `hackrf_transfer` tool in the HackRF host software. 
-
-```
-> hackrf_transfer -t gpssim.bin -f 1575420000 -s 2600000 -a 1 -x 0
-```
-
-#### UHD supported devices (tested with USRP2 only):
-
-```
-> gps-sdr-sim-uhd.py -t gpssim.bin -s 2500000 -x 0
-```
-
-You can also use `tx_samples_from_file` tool included in the UHD examples:
-```
-> tx_samples_from_file --file gpssim.bin --type short --rate 2500000 --freq 1575420000 --gain 0
-```
-
-#### LimeSDR (in case of 1 Msps 1-bit file, to get full BaseBand dynamic and low RF power):
-
-```
-> limeplayer -s 1000000 -b 1 -d 2047 -g 0.1 < ../circle.1b.1M.bin
-```
-
-#### ADALM-Pluto (PlutoSDR):
-
-The ADALM-Pluto device is expected to have its network interface up and running and is accessible
-via "pluto.local" by default.
-
-Default settings:
-```
-> plutoplayer -t gpssim.bin
-```
-Set TX attenuation:
-```
-> plutoplayer -t gpssim.bin -a -30.0
-```
-Default -20.0dB. Applicable range 0.0dB to -80.0dB in 0.25dB steps.
-
-Set RF bandwidth:
-```
-> plutoplayer -t gpssim.bin -b 3.0
-```
-Default 3.0MHz. Applicable range 1.0MHz to 5.0MHz.
-
-### License
+## ⚖️ License
 
 Copyright &copy; 2026 Marc Oger  
 Copyright &copy; 2015-2025 Takuji Ebinuma  
