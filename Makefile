@@ -1,7 +1,7 @@
 # Makefile for Linux etc.
 
-.PHONY: all clean time
-all: gps-sdr-sim
+.PHONY: all clean time check-gcc
+all: check-gcc gps-sdr-sim
 
 SHELL=/bin/bash
 CC=gcc
@@ -10,6 +10,17 @@ ifdef USER_MOTION_SIZE
 CFLAGS+=-DUSER_MOTION_SIZE=$(USER_MOTION_SIZE)
 endif
 LDFLAGS=-lm
+
+# --- NEW: Compiler version check ---
+check-gcc:
+	@if $(CC) --version | grep -qi "gcc"; then \
+		GCC_MAJOR=$$($(CC) -dumpversion | cut -d. -f1); \
+		if [ "$$GCC_MAJOR" -lt 13 ]; then \
+			echo -e "\033[0;31mERROR: GCC 13 or higher is required for C23 constexpr support.\033[0m"; \
+			echo "Detected GCC version: $$($(CC) -dumpversion)"; \
+			exit 1; \
+		fi; \
+	fi
 
 gps-sdr-sim: gpssim.o
 	${CC} $< ${LDFLAGS} -o $@
