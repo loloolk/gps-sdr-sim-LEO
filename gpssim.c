@@ -1617,71 +1617,62 @@ int readNmeaGGA(sim_config_t *config, FILE *fp, double xyz[USER_MOTION_SIZE][3],
 		if (fgets(str, MAX_CHAR, fp) == NULL)
 			break;
 
-		char *token = strtok(str, ",");
+		// Use strsep (not strtok) so that empty comma-delimited fields are
+		// returned as empty strings rather than being silently skipped.
+		// Some NMEA GGA sentences omit HDOP and/or geoid height.
+		char *rest = str;
+		char *tag = strsep(&rest, ",");
+		if (tag == NULL || strncmp(tag + 3, "GGA", 3) != 0)
+			continue;
 
+		char tmp[8];
 		double llh[3], pos[3];
 
-		if (strncmp(token + 3, "GGA", 3) == 0)
-		{
-			token = strtok(NULL, ","); // Date and time
+		strsep(&rest, ",");                     // UTC time (ignored)
 
-			token = strtok(NULL, ","); // Latitude
-			
-			char tmp[8];
-			strncpy(tmp, token, 2);
+		char *f_lat = strsep(&rest, ",");       // Latitude DDMM.mmm
+		char *f_ns  = strsep(&rest, ",");       // N/S
+		char *f_lon = strsep(&rest, ",");       // Longitude DDDMM.mmm
+		char *f_ew  = strsep(&rest, ",");       // E/W
+		strsep(&rest, ",");                     // Fix quality (skip)
+		strsep(&rest, ",");                     // Num satellites (skip)
+		strsep(&rest, ",");                     // HDOP (may be empty — skip)
+		char *f_alt = strsep(&rest, ",");       // Altitude above MSL
+		strsep(&rest, ",");                     // Altitude unit (skip)
+		char *f_geo = strsep(&rest, ",");       // Geoid height (may be empty)
 
-			tmp[2] = 0;
+		if (!f_lat || !f_ns || !f_lon || !f_ew || !f_alt)
+			continue;
 
-			llh[0] = atof(tmp) + atof(token + 2) / 60.0;
+		// Latitude: DDMM.mmm + hemisphere
+		strncpy(tmp, f_lat, 2); tmp[2] = '\0';
+		llh[0] = atof(tmp) + atof(f_lat + 2) / 60.0;
+		if (f_ns[0] == 'S') llh[0] *= -1.0;
+		llh[0] /= R2D;
 
-			token = strtok(NULL, ","); // North or south
-			if (token[0] == 'S')
-				llh[0] *= -1.0;
+		// Longitude: DDDMM.mmm + hemisphere
+		strncpy(tmp, f_lon, 3); tmp[3] = '\0';
+		llh[1] = atof(tmp) + atof(f_lon + 3) / 60.0;
+		if (f_ew[0] == 'W') llh[1] *= -1.0;
+		llh[1] /= R2D;
 
-			llh[0] /= R2D; // in radian
+		// Altitude: MSL + geoid separation (atof("") == 0.0 for empty field)
+		llh[2] = atof(f_alt);
+		if (f_geo != NULL) llh[2] += atof(f_geo);
 
-			token = strtok(NULL, ","); // Longitude
-			strncpy(tmp, token, 3);
-			tmp[3] = 0;
+		// Convert geodetic position into ECEF coordinates
+		llh2ecef(llh, pos);
 
-			llh[1] = atof(tmp) + atof(token + 3) / 60.0;
+		xyz[numd][0] = pos[0];
+		xyz[numd][1] = pos[1];
+		xyz[numd][2] = pos[2];
 
-			token = strtok(NULL, ","); // East or west
-			if (token[0] == 'W')
-				llh[1] *= -1.0;
-
-			llh[1] /= R2D; // in radian
-
-			token = strtok(NULL, ","); // GPS fix
-			token = strtok(NULL, ","); // Number of satellites
-			token = strtok(NULL, ","); // HDOP
-
-			token = strtok(NULL, ","); // Altitude above meas sea level
-
-			llh[2] = atof(token);
-
-			token = strtok(NULL, ","); // in meter
-
-			token = strtok(NULL, ","); // Geoid height above WGS84 ellipsoid
-
-			llh[2] += atof(token);
-
-			// Convert geodetic position into ECEF coordinates
-			llh2ecef(llh, pos);
-
-			xyz[numd][0] = pos[0];
-			xyz[numd][1] = pos[1];
-			xyz[numd][2] = pos[2];
-
-			// Update the number of track points
-			numd++;
-
-			if (numd >= USER_MOTION_SIZE)
-				break;
-		}
+		numd++;
+		if (numd >= USER_MOTION_SIZE)
+			break;
 	}
 
-	return (numd);
+	return numd;
 }
 
 /*!
@@ -2904,27 +2895,33 @@ int main(int argc, char *argv[])
 #endif
 			}
 
-			// Scaled by 2^7
-			i_acc = i_acc / 128.0;
-			q_acc = q_acc / 128.0;
+			// Scale to output format range.
+			// SC16: divisor 2^7 — values typically ±1800, fitting comfortably in short.
+			// SC08: divisor 2^11 — the same accumulated signal overflows signed char
+			//       (range ±127) with the SC16 divisor, causing UB wrapping and broken
+			//       tracking. 2048 keeps peaks within ±127 for up to ~12 visible SVs.
+			// SC01: sign-only; divisor doesn't matter beyond preserving sign.
+			double divisor = (config.data_format == SC08) ? 2048.0 : 128.0;
+			double sc_i = i_acc / divisor;
+			double sc_q = q_acc / divisor;
 
 			// Store I/Q samples into buffer
 			if (config.data_format == SC16)
 			{
-				((short *)state.iq_buff)[sample_idx * 2]     = (short)i_acc;
-				((short *)state.iq_buff)[sample_idx * 2 + 1] = (short)q_acc;
+				((short *)state.iq_buff)[sample_idx * 2]     = (short)sc_i;
+				((short *)state.iq_buff)[sample_idx * 2 + 1] = (short)sc_q;
 			}
 			else if (config.data_format == SC08)
 			{
-				((signed char *)state.iq_buff)[sample_idx * 2]     = (signed char)i_acc;
-				((signed char *)state.iq_buff)[sample_idx * 2 + 1] = (signed char)q_acc;
+				((signed char *)state.iq_buff)[sample_idx * 2]     = (signed char)sc_i;
+				((signed char *)state.iq_buff)[sample_idx * 2 + 1] = (signed char)sc_q;
 			}
 			else if (config.data_format == SC01) // pack 2 bits (I then Q) per sample into bytes
-			{ // Might be an inssue with scaling r/ now
+			{
 				if (sample_idx % 4 == 0)
 					((unsigned char *)state.iq_buff)[sample_idx / 4] = 0x00;
-				((unsigned char *)state.iq_buff)[sample_idx / 4] |= (i_acc > 0 ? 1 : 0) << (7 - (sample_idx * 2)     % 8);
-				((unsigned char *)state.iq_buff)[sample_idx / 4] |= (q_acc > 0 ? 1 : 0) << (7 - (sample_idx * 2 + 1) % 8);
+				((unsigned char *)state.iq_buff)[sample_idx / 4] |= (sc_i > 0 ? 1 : 0) << (7 - (sample_idx * 2)     % 8);
+				((unsigned char *)state.iq_buff)[sample_idx / 4] |= (sc_q > 0 ? 1 : 0) << (7 - (sample_idx * 2 + 1) % 8);
 			}
 			else
 			{
