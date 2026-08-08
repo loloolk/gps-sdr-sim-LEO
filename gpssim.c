@@ -3172,6 +3172,10 @@ int main(int argc, char *argv[])
 	// Free user motion buffers
 	freeMotionBuffers(&state);
 
+	// Free the custom antenna model, if one was loaded by -A
+	free(config.antenna_model);
+	config.antenna_model = NULL;
+
 	// Close file
 	fclose(state.fp_out);
 
