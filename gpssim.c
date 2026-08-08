@@ -1597,6 +1597,40 @@ int readLLH(sim_config_t *config, FILE *fp, double xyz[USER_MOTION_SIZE][3], dou
 }
 
 /*!
+ * \brief Extract the next delimited field from a string, in place
+ * \param[inout] stringp Address of the remaining text, advanced past the delimiter (set to NULL once consumed)
+ * \param[in] delim Set of delimiter characters
+ * \returns Pointer to the extracted field, or NULL once the string has been fully consumed
+ * \details Behaves like the BSD strsep: unlike strtok, a run of consecutive delimiters yields empty
+ * \details fields rather than silently collapsing them, which is required to keep NMEA columns aligned.
+ * \details Provided locally because strsep is a BSD extension and is absent from MinGW and MSVC.
+ */
+char *nextField(char **stringp, const char *delim)
+{
+	char *field = *stringp;
+
+	// The string has already been fully consumed by a previous call
+	if (field == NULL)
+		return (NULL);
+
+	char *delim_pos = strpbrk(field, delim);
+
+	if (delim_pos != NULL)
+	{
+		// Terminate this field and resume after the delimiter on the next call
+		*delim_pos = '\0';
+		*stringp = delim_pos + 1;
+	}
+	else
+	{
+		// Last field: return it, then report exhaustion on the next call
+		*stringp = NULL;
+	}
+
+	return (field);
+}
+
+/*!
  * \brief Read the list of user motions from the input file in NMEA GGA format
  * Note: Attitude information is not available in NMEA GGA format, so config->has_attitude is not updated.
  * \param[out] config Simulation configuration (updated with attitude information if available)
@@ -1617,29 +1651,29 @@ int readNmeaGGA(sim_config_t *config, FILE *fp, double xyz[USER_MOTION_SIZE][3],
 		if (fgets(str, MAX_CHAR, fp) == NULL)
 			break;
 
-		// Use strsep (not strtok) so that empty comma-delimited fields are
+		// Use nextField (not strtok) so that empty comma-delimited fields are
 		// returned as empty strings rather than being silently skipped.
 		// Some NMEA GGA sentences omit HDOP and/or geoid height.
 		char *rest = str;
-		char *tag = strsep(&rest, ",");
+		char *tag = nextField(&rest, ",");
 		if (tag == NULL || strncmp(tag + 3, "GGA", 3) != 0)
 			continue;
 
 		char tmp[8];
 		double llh[3], pos[3];
 
-		strsep(&rest, ",");                     // UTC time (ignored)
+		nextField(&rest, ",");                  // UTC time (ignored)
 
-		char *f_lat = strsep(&rest, ",");       // Latitude DDMM.mmm
-		char *f_ns  = strsep(&rest, ",");       // N/S
-		char *f_lon = strsep(&rest, ",");       // Longitude DDDMM.mmm
-		char *f_ew  = strsep(&rest, ",");       // E/W
-		strsep(&rest, ",");                     // Fix quality (skip)
-		strsep(&rest, ",");                     // Num satellites (skip)
-		strsep(&rest, ",");                     // HDOP (may be empty — skip)
-		char *f_alt = strsep(&rest, ",");       // Altitude above MSL
-		strsep(&rest, ",");                     // Altitude unit (skip)
-		char *f_geo = strsep(&rest, ",");       // Geoid height (may be empty)
+		char *f_lat = nextField(&rest, ",");    // Latitude DDMM.mmm
+		char *f_ns  = nextField(&rest, ",");    // N/S
+		char *f_lon = nextField(&rest, ",");    // Longitude DDDMM.mmm
+		char *f_ew  = nextField(&rest, ",");    // E/W
+		nextField(&rest, ",");                  // Fix quality (skip)
+		nextField(&rest, ",");                  // Num satellites (skip)
+		nextField(&rest, ",");                  // HDOP (may be empty — skip)
+		char *f_alt = nextField(&rest, ",");    // Altitude above MSL
+		nextField(&rest, ",");                  // Altitude unit (skip)
+		char *f_geo = nextField(&rest, ",");    // Geoid height (may be empty)
 
 		if (!f_lat || !f_ns || !f_lon || !f_ew || !f_alt)
 			continue;
