@@ -15,9 +15,11 @@
 /*! \brief Maximum number of channels we simulate */
 #define MAX_CHAN (16)
 
-/*! \brief Maximum number of user motion points */
+/*! \brief Default number of user motion points, used only to derive the default simulated duration.
+ *  \details The user motion arrays are heap allocated to fit the input file, so this is no longer an upper bound.
+ *  \details It sets the duration used when -d is omitted; pass -d to simulate longer than this. */
 #ifndef USER_MOTION_SIZE
-#define USER_MOTION_SIZE (3000) // max duration at 10Hz
+#define USER_MOTION_SIZE (3000) // default duration at 10Hz
 #endif
 
 /*! \brief Maximum duration for static mode*/
@@ -479,10 +481,18 @@ typedef struct {
 	 * The quat array contains the attitude of the user in quaternion format (qw, qx, qy, qz) at each time step, if available.
 	 * The number of valid records in these arrays is determined by the numd variable, which is set based on the user motion file or static mode duration.
 	 * The arrays are indexed by time step, where the time step is determined by the sampling frequency and the duration of the simulation.
-	 * The maximum size of these arrays is defined by USER_MOTION_SIZE, which should be large enough to accommodate the desired simulation duration at the given sampling frequency.
+	 * Both arrays are heap allocated by `allocateMotionBuffers` once the length of the trajectory is known,
+	 * so the simulated duration is limited by the input file and by available memory rather than by a compile-time bound.
+	 * The number of records they can hold is stored in motion_capacity.
 	 */
-	double xyz[USER_MOTION_SIZE][3]; // consider moving these to their own struct?
-	double quat[USER_MOTION_SIZE][4];   // [qw, qx, qy, qz]  ECEF -> body
+	double (*xyz)[3]; // consider moving these to their own struct?
+	double (*quat)[4];  // [qw, qx, qy, qz]  NEU -> body
+
+	/*
+	 * Number of user motion records the xyz and quat arrays were allocated to hold.
+	 * Used to bound the readers so that they never write past the end of the allocation.
+	 */
+	int motion_capacity;
 
 
 	/* 
@@ -540,9 +550,10 @@ static const sim_state_t DEFAULT_SIM_STATE = {
 	.eph_count = -1,
 	.current_eph_index = -1,
 
-	.xyz = {{0.0, 0.0, 0.0}}, // Initialize all positions to zero
-	.quat = {[0 ... USER_MOTION_SIZE - 1] = {1.0, 0.0, 0.0, 0.0}}, // Initialize all quaternions to identity (no rotation)
-	
+	.xyz = NULL, // Allocated by allocateMotionBuffers once the trajectory length is known
+	.quat = NULL, // Allocated alongside xyz, and filled with identity quaternions (no rotation)
+	.motion_capacity = 0,
+
 	.allocatedSat = {[0 ... MAX_SAT - 1] = -1}, // Initialize all to -1 (not allocated)
 	.channels = {{0}}, // Initialize all channel data to zero
 
