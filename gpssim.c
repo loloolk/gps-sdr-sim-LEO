@@ -2368,6 +2368,16 @@ void verifyArguments(sim_config_t *config, sim_state_t *state)
 
 	// Floor the frequency to the nearest 10 Hz to ensure it is compatible with the internal processing
 	config->sample_frequency = floor(config->sample_frequency / 10.0) * 10.0;
+
+	// The 1-bit format packs 2 bits (I then Q) per sample, so exactly 4 samples fill one output byte.
+	// A 0.1 second block holds sample_frequency/10 samples, which must therefore be a multiple of 4.
+	// Any other count would leave the final byte of every block partially filled, which would both
+	// truncate the trailing samples and break the continuity of the bit stream across blocks.
+	if (config->data_format == SC01 && ((int)(config->sample_frequency / 10.0)) % 4 != 0)
+	{
+		fprintf(stderr, "ERROR: 1-bit I/Q data format requires a sampling frequency that is a multiple of 40 Hz.\n");
+		exit(1);
+	}
 }
 
 /*!
