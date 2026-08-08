@@ -1426,12 +1426,12 @@ void computeCodePhase(sim_config_t *config, channel_t *chan, range_t rho1, doubl
  * \param[out] quat Attitude quaternions of the user motion (updated with data read from the file, or set to identity if not available)
  * \returns Number of user data motion records read, -1 on error
  */
-int readECEF(sim_config_t *config, FILE *fp, double xyz[USER_MOTION_SIZE][3], double quat[USER_MOTION_SIZE][4])
+int readECEF(sim_config_t *config, FILE *fp, double (*xyz)[3], double (*quat)[4], int capacity)
 {
     config->has_attitude = FALSE;
 
 	int numd;
-    for (numd = 0; numd < USER_MOTION_SIZE; numd++)
+    for (numd = 0; numd < capacity; numd++)
     {
     	char str[MAX_CHAR];
 
@@ -1510,12 +1510,12 @@ int readECEF(sim_config_t *config, FILE *fp, double xyz[USER_MOTION_SIZE][3], do
  *
  * Added by romalvarezllorens@gmail.com
  */
-int readLLH(sim_config_t *config, FILE *fp, double xyz[USER_MOTION_SIZE][3], double quat[USER_MOTION_SIZE][4])
+int readLLH(sim_config_t *config, FILE *fp, double (*xyz)[3], double (*quat)[4], int capacity)
 {
 	config->has_attitude = FALSE;
 
     int numd;
-	for (numd = 0; numd < USER_MOTION_SIZE; numd++)
+	for (numd = 0; numd < capacity; numd++)
 	{
 		char str[MAX_CHAR];
 		
@@ -1640,7 +1640,7 @@ char *nextField(char **stringp, const char *delim)
  * \param[out] quat Attitude quaternions of the user motion (not updated since NMEA GGA does not contain attitude information)
  * \returns Number of user data motion records read, -1 on error
  */
-int readNmeaGGA(sim_config_t *config, FILE *fp, double xyz[USER_MOTION_SIZE][3], double quat[USER_MOTION_SIZE][4])
+int readNmeaGGA(sim_config_t *config, FILE *fp, double (*xyz)[3], double (*quat)[4], int capacity)
 {
 	config->has_attitude = FALSE;
 
@@ -1702,11 +1702,98 @@ int readNmeaGGA(sim_config_t *config, FILE *fp, double xyz[USER_MOTION_SIZE][3],
 		xyz[numd][2] = pos[2];
 
 		numd++;
-		if (numd >= USER_MOTION_SIZE)
+		if (numd >= capacity)
 			break;
 	}
 
 	return numd;
+}
+
+/*!
+ * \brief Release the user motion buffers held by the simulation state
+ * \param[inout] state Simulation state whose xyz and quat arrays are freed and cleared
+ */
+void freeMotionBuffers(sim_state_t *state)
+{
+	free(state->xyz);
+	free(state->quat);
+
+	state->xyz = NULL;
+	state->quat = NULL;
+	state->motion_capacity = 0;
+}
+
+/*!
+ * \brief Allocate the user motion buffers to hold a given number of records
+ * \param[inout] state Simulation state whose xyz and quat arrays are (re)allocated
+ * \param[in] capacity Number of user motion records to make room for (must be at least 1)
+ * \details Any previous allocation is released first, so this may be called again to grow the buffers.
+ * \details Positions start at zero and attitudes at the identity quaternion, matching the zenith-up
+ * \details fallback used when the input file carries no attitude columns.
+ */
+void allocateMotionBuffers(sim_state_t *state, int capacity)
+{
+	if (capacity < 1)
+		capacity = 1;
+
+	freeMotionBuffers(state);
+
+	state->xyz = calloc((size_t)capacity, sizeof(*state->xyz));
+	state->quat = calloc((size_t)capacity, sizeof(*state->quat));
+
+	if (state->xyz == NULL || state->quat == NULL)
+	{
+		fprintf(stderr, "ERROR: Failed to allocate user motion buffers for %d records (%.1f MB).\n",
+			capacity, (double)capacity * (sizeof(*state->xyz) + sizeof(*state->quat)) / 1048576.0);
+		exit(1);
+	}
+
+	// Identity quaternion (no rotation), so an antenna with no attitude data points at zenith
+	for (int i = 0; i < capacity; i++)
+	{
+		state->quat[i][0] = 1.0;
+		state->quat[i][1] = 0.0;
+		state->quat[i][2] = 0.0;
+		state->quat[i][3] = 0.0;
+	}
+
+	state->motion_capacity = capacity;
+
+	return;
+}
+
+/*!
+ * \brief Count the number of lines in the user motion input file
+ * \param[in] fname File name of the user motion input file
+ * \returns Number of lines in the file, or -1 if the file cannot be opened
+ * \details This is an upper bound on the number of records the readers can return, which is all that
+ * \details is needed to size the buffers. NMEA streams may contain non-GGA sentences, and any format
+ * \details may stop early on a malformed line, so the readers themselves report the true record count.
+ */
+int countMotionRecords(const char *fname)
+{
+	FILE *fp;
+	if ((fp = fopen(fname, "r")) == NULL)
+		return (-1);
+
+	int lines = 0;
+	int ch, prev = '\n';
+
+	while ((ch = fgetc(fp)) != EOF)
+	{
+		if (ch == '\n')
+			lines++;
+
+		prev = ch;
+	}
+
+	// Count a final line that is not terminated by a newline
+	if (prev != '\n')
+		lines++;
+
+	fclose(fp);
+
+	return (lines);
 }
 
 /*!
@@ -1725,6 +1812,18 @@ int readUserMotion(sim_config_t *config, sim_state_t *state)
 		return (-1);
 	}
 	
+	// Size the buffers from the file itself, capped by the requested duration so that a very long
+	// trajectory is not held in memory when only the first part of it will be simulated.
+	int line_count = countMotionRecords(config->umfile);
+	if (line_count < 0)
+	{
+		fprintf(stderr, "ERROR: Cannot open user motion file %s.\n", config->umfile);
+		return (-1);
+	}
+
+	int wanted = (int)(config->max_duration * 10.0 + 0.5);
+	allocateMotionBuffers(state, line_count < wanted ? line_count : wanted);
+
 	FILE *fp;
 	if ((fp = fopen(config->umfile, "r")) == NULL)
 	{
@@ -1734,11 +1833,11 @@ int readUserMotion(sim_config_t *config, sim_state_t *state)
 
 	int user_motion_count = 0;
 	if (config->um_nmeaGGA == TRUE)
-		user_motion_count = readNmeaGGA(config, fp, state->xyz, state->quat);
+		user_motion_count = readNmeaGGA(config, fp, state->xyz, state->quat, state->motion_capacity);
 	else if (config->um_LLH == TRUE)
-		user_motion_count = readLLH(config, fp, state->xyz, state->quat);
+		user_motion_count = readLLH(config, fp, state->xyz, state->quat, state->motion_capacity);
 	else if (config->um_ECEF == TRUE)
-		user_motion_count = readECEF(config, fp, state->xyz, state->quat);
+		user_motion_count = readECEF(config, fp, state->xyz, state->quat, state->motion_capacity);
 	else
 	{
 		fprintf(stderr, "ERROR: No user motion input method specified.\n");
@@ -1746,6 +1845,10 @@ int readUserMotion(sim_config_t *config, sim_state_t *state)
 	}
 
 	fclose(fp);
+
+	// Reported after the read so that it keeps its original position relative to the readers' own messages
+	if (user_motion_count > 0 && line_count > wanted)
+		fprintf(stderr, "Truncating user motion data to %d records based on specified duration.\n", wanted);
 
 	return (user_motion_count);
 }
@@ -2016,7 +2119,7 @@ void usage(void)
 		"  -L <wnslf,dn,dtslf> User leap future event in GPS week number, day number, next leap second e.g. 2347,3,19\n"
 		"  -t <date,time>   Scenario start time YYYY/MM/DD,hh:mm:ss\n"
 		"  -T <date,time>   Overwrite TOC and TOE to scenario start time\n"
-		"  -d <duration>    Duration [sec] (dynamic mode max: %.0f, static mode max: %d)\n"
+		"  -d <duration>    Duration [sec] (default: %.0f, max: %d; dynamic mode is also limited by the trajectory length)\n"
 		"  -o <output>      I/Q sampling data file (default: gpssim.bin)\n"
 		"  -s <frequency>   Sampling frequency [Hz] (default: 2600000)\n"
 		"  -f <frequency>   Supported carrier frequency [L1/L2/L5] (default: L1)\n"
@@ -2356,7 +2459,11 @@ void verifyArguments(sim_config_t *config, sim_state_t *state)
 	}
 
 	int staticLocationMode = config->static_ECEF || config->static_LLH;
-	double max_allowed = staticLocationMode ? (double)STATIC_MAX_DURATION : ((double)USER_MOTION_SIZE) / 10.0;
+
+	// The user motion buffers are sized to the input file, so dynamic mode is no longer bounded by a
+	// compile-time array. Both modes share the same sanity ceiling; a dynamic run is additionally
+	// shortened to the length of the trajectory by initializeSimulation.
+	double max_allowed = (double)STATIC_MAX_DURATION;
 
 	if (config->max_duration > max_allowed)
 	{
@@ -2618,6 +2725,11 @@ int main(int argc, char *argv[])
 	
 	sim_config_t config = DEFAULT_SIM_CONFIG;
 	sim_state_t state = DEFAULT_SIM_STATE;
+
+	// The static location options (-c and -l) write straight into the first user motion record, so a
+	// minimal buffer has to exist before the arguments are parsed. Dynamic modes grow it to fit the
+	// trajectory once the input file has been measured.
+	allocateMotionBuffers(&state, 1);
 
 	// Parse user arguments to populate the config and state structures
 	parseArguments(argc, argv, &config, &state);
@@ -3056,6 +3168,9 @@ int main(int argc, char *argv[])
 
 	// Free I/Q buffer
 	free(state.iq_buff);
+
+	// Free user motion buffers
+	freeMotionBuffers(&state);
 
 	// Close file
 	fclose(state.fp_out);
