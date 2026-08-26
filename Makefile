@@ -1,7 +1,14 @@
 # Makefile for Linux etc.
 
+# gcc appends .exe on Windows, so the link target has to carry the suffix too.
+# Without it make never sees the file it just built and relinks on every run.
+ifeq ($(OS),Windows_NT)
+EXE=.exe
+endif
+BIN=gps-sdr-sim$(EXE)
+
 .PHONY: all clean time check-gcc
-all: check-gcc gps-sdr-sim
+all: check-gcc $(BIN)
 
 SHELL=/bin/bash
 CC=gcc
@@ -22,7 +29,7 @@ check-gcc:
 		fi; \
 	fi
 
-gps-sdr-sim: gpssim.o
+$(BIN): gpssim.o
 	${CC} $< ${LDFLAGS} -o $@
 
 gpssim.o: .user-motion-size gpssim.h
@@ -38,12 +45,20 @@ gpssim.o: .user-motion-size gpssim.h
 	fi;
 
 clean:
-	rm -f gpssim.o gps-sdr-sim *.bin .user-motion-size
+	rm -f gpssim.o gps-sdr-sim gps-sdr-sim.exe *.bin .user-motion-size
 
-time: gps-sdr-sim
-	time ./gps-sdr-sim -e brdc3540.14n -u circle.csv -b 1
-	time ./gps-sdr-sim -e brdc3540.14n -u circle.csv -b 8
-	time ./gps-sdr-sim -e brdc3540.14n -u circle.csv -b 16
+# Inputs for the `time` benchmark; override on the command line if needed.
+BENCH_EPH?=input_files/ephemeris/brdc0010.22n
+BENCH_MOTION?=input_files/circle.csv
+
+# `time` is a bash keyword, not a binary, and make execs a recipe line with no
+# shell metacharacters directly instead of handing it to $(SHELL). The loop
+# keeps the recipe off that fast path so bash gets to interpret it.
+time: $(BIN)
+	@for bits in 1 8 16; do \
+		echo "=== $(BIN) -b $$bits ==="; \
+		time ./$(BIN) -e $(BENCH_EPH) -u $(BENCH_MOTION) -b $$bits || exit 1; \
+	done
 
 .FORCE:
 
